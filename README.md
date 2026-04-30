@@ -18,7 +18,7 @@ Vanilla DOOM expects roughly 4 MiB of heap (zone + lump cache). The
 ESP32-C6 has 512 KiB of internal SRAM total and ESP-IDF baseline eats
 most of it; raw `idf.py monitor` reports ~70 KiB of free heap after
 init. Getting from "70 KiB heap" to "176 KiB DOOM zone" was the
-project — see `/doom` page on [blossoms.one](https://blossoms.one) for
+project — see defcon page on [blossoms.one](https://blossoms.one/defcon) for
 the full story.
 
 Highlights of the techniques used:
