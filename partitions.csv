@@ -1,0 +1,18 @@
+# Name,    Type,  SubType,  Offset,    Size,     Flags
+# Custom partition layout for ESP32-C6 8 MB flash:
+#   nvs   — 16 KB persistent player config (kept for future use)
+#   ota_0 — 2 MB app slot (no OTA, this is just where the firmware lives)
+#   wad   — 5 MB raw flash containing DOOM1.WAD. mmap'd at runtime via
+#           esp_partition_mmap — NOT a filesystem. Flash separately with
+#           tools/flash_wad.sh after `idf.py build flash`.
+# Type/subtype 0x40 / 0x46 are deliberately outside ESP-IDF's reserved
+# ranges so no IDF subsystem tries to interpret them.
+# IMPORTANT: shareware DOOM1.WAD is 4,196,020 bytes — slightly OVER 4 MiB
+# because the lump directory tail spills past the 4 MiB boundary. A 4 MiB
+# partition truncates the last ~107 directory entries (including F_START)
+# and W_AddFile fills lumpinfo[1156..] with whatever flash sits past the
+# partition. DOOM then can't find F_START / sprites / sounds and crashes
+# in R_InitFlats. 5 MiB fits the full shareware WAD with headroom.
+nvs,       data,  nvs,      0x9000,    0x4000,
+ota_0,     app,   ota_0,    0x10000,   0x200000,
+wad,       0x40,  0x46,     0x210000,  0x500000,
