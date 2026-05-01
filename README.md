@@ -7,10 +7,28 @@ WS2812B ring, vibration motor. Built on top of
 
 ## What runs
 
-Shareware **DOOM1.WAD** boots, the title cycle works, the menu works,
-**E1M1 loads and plays** end-to-end. Bigger maps (E1M2+) probably
-won't fit — they need ~30–60 KiB more PU_LEVEL geometry than we have
-zone for.
+Three ship targets, picked at trim-time:
+
+1. **Shareware `DOOM1.WAD`** — E1M1 plays end-to-end. Bigger maps
+   (E1M2+) need ~30–60 KiB more PU_LEVEL geometry than the zone has.
+   The static reclaims in this branch (status-bar backing, dead
+   `rgb565_palette`, sound channels) free ~10.7 KiB more zone, which
+   may be enough for the smaller maps but is not yet a guarantee.
+2. **Trimmed `DOOM_TRIM_E12.WAD` (E1+E2, 18 maps, ~6.3 MiB)** — the
+   safe ship target. `tools/trim_wad.py --strip all --prune-unused
+   --pack --squash-patches` from the user's legally-owned Ultimate
+   Doom `DOOM.WAD`.
+3. **Trimmed `DOOM_TRIM_E123.WAD` (E1+E2+E3, 27 maps, ~7.2 MiB)** —
+   the original-retail-Doom ship target. Fits the badge's 8 MiB
+   flash thanks to the WadPtr-style packing pipeline (SIDEDEFS row
+   dedup, BLOCKMAP cell merge, patch column dedup, identical-lump
+   directory-share, fullscreen-graphic placeholder substitution).
+   No audio, no music, no intermission/HUD screens — the trim
+   replaces those lumps with a 13-byte transparent placeholder so
+   the renderer's `V_DrawPatch` calls don't `I_Error`.
+
+Episode 4 cannot fit even after packing — sprites/textures are
+irreducible without invasive firmware-side recompression.
 
 ## The fight
 
@@ -57,9 +75,30 @@ Highlights of the techniques used:
    static page instead.
 10. **R_FindPlane gracefully degrades** on visplane overflow (reuses
     the last plane) instead of `I_Error`'ing.
+11. **`-Os` + `LOG_LEVEL_NONE`** in `sdkconfig.defaults` shrinks the app
+    binary from 597 KiB → 497 KiB (–100 KiB). The freed flash goes to
+    the `wad` partition, which is now 7 MiB to fit a trimmed Ultimate
+    Doom IWAD.
+12. **Status-bar backing buffer dropped.** `ST_refreshBackground` used
+    to draw into a 10 KiB `Z_Malloc`'d buffer and `V_CopyRect` it down;
+    we now draw straight into the framebuffer at `(ST_X, ST_Y)`. Saves
+    10 KiB of zone every level.
+13. **Dead `rgb565_palette[256]`** in `i_video.c` removed (~512 B
+    `.bss`) — the populating loop was commented out years ago and the
+    only reader is the mouse-accel widget, gated behind `usemouse=0`.
+14. **`S_Init` skipped without `FEATURE_SOUND`** — the no-op sound
+    layer was still allocating an 8-channel `channel_t` table for
+    nothing.
+15. **WadPtr-style WAD packing in tools/trim_wad.py** (`--pack`,
+    `--squash-patches`, plus identical-lump directory-share at write
+    time): SIDEDEFS row dedup, BLOCKMAP cell merge, patch column
+    dedup. Lossless, output is a standard WAD. **~660 KiB saved on
+    Ultimate Doom**; without these E1+E2+E3 wouldn't fit 8 MiB flash.
 
-End state: pre-zone heap **184 KiB**, largest contig **160 KiB**,
-DOOM zone **156 KiB**. E1M1 fits with maybe 2–5 KiB of headroom.
+End state with shareware DOOM1.WAD: pre-zone heap **184 KiB**, largest
+contig **160 KiB**, DOOM zone **156 KiB**. E1M1 fits with maybe 2–5 KiB
+of headroom; the 10 KiB st_backing_screen reclaim should help E1M2+
+fit but isn't yet measured on hardware.
 
 ## Hardware bring-up
 
@@ -101,34 +140,60 @@ tic boundaries. Fix: schedule the release ~50 ms later via
 ## Build
 
 ```sh
-# Bake the texture column tables for whichever WAD you're shipping.
-python3 tools/bake_textures.py DOOM1.WAD > main/baked_textures.c
+# 1. Audit the user-supplied IWAD (read-only).
+python3 tools/wad_audit.py DOOM.WAD
 
-# Build firmware.
+# 2. Trim + pack. Two common targets:
+#
+#    E1+E2+E3 (27 maps — original retail Doom scope):
+python3 tools/trim_wad.py DOOM.WAD DOOM_TRIM.WAD \
+        --strip music,sfx,speaker,sndcfg,demos,endoom,\
+e4,fullscreens,intermission,screens \
+        --prune-unused --pack --squash-patches \
+        --keep-lumps TITLEPIC,VICTORY2
+#
+#    E1+E2 (18 maps — comfortable fit, more zone headroom):
+python3 tools/trim_wad.py DOOM.WAD DOOM_TRIM.WAD \
+        --strip all --prune-unused --pack --squash-patches \
+        --keep-lumps TITLEPIC,VICTORY2
+
+# 3. Bake the texture column tables AGAINST THE TRIM WAD. The bake is
+#    keyed to the WAD's lump indices — running against the wrong WAD
+#    silently produces garbled walls.
+python3 tools/bake_textures.py DOOM_TRIM.WAD > main/baked_textures.c
+
+# 4. Build firmware.
 idf.py set-target esp32c6
 idf.py build flash
 
-# Flash the WAD into the raw 'wad' partition (no filesystem).
-./tools/flash_wad.sh DOOM1.WAD
+# 5. Flash the WAD into the raw 'wad' partition (no filesystem).
+./tools/flash_wad.sh DOOM_TRIM.WAD
 ```
 
-The WAD partition is sized 5 MiB because the shareware DOOM1.WAD is
-4,196,020 bytes — 1716 bytes over the natural 4 MiB boundary because
-the lump-directory tail spills over. A 4 MiB partition silently
-truncates ~107 directory entries (including F_START / F_END) and the
-WAD reader returns garbage for them. Don't ask how long this took to
-debug.
+Partition layout: **640 KiB app + 7.31 MiB wad** (see
+`partitions.csv`). The packed E1+E2+E3 trim (~7.2 MiB) fits with
+~110 KiB headroom; the binary (497 KiB) has 143 KiB growth headroom
+in its slot. E1+E2 fits trivially (~6.3 MiB).
+
+The packing pipeline (`--pack` + `--squash-patches` + lump-merge in
+the writer) is bytes-equivalent to running [WadPtr](https://github.com/fragglet/wadptr)
+on the trimmed WAD. The output is a *standard WAD* — Chocolate
+DOOM and other source ports read it normally. Verify on desktop
+before flashing if desired.
 
 ## Layout
 
 ```
 dcsgonefw-doom/
 ├── CMakeLists.txt              ESP-IDF project root
-├── partitions.csv              nvs / 2 MB app / 5 MB wad
-├── sdkconfig.defaults          all the RAM tunings
-├── DOOM1.WAD                   shareware WAD (provide your own)
+├── partitions.csv              nvs / 1 MB app / 7 MB wad
+├── sdkconfig.defaults          RAM tunings + -Os release config
+├── DOOM.WAD                    user-supplied source IWAD (gitignored)
+├── DOOM_TRIM.WAD               build artifact (gitignored)
 ├── doomgeneric/                upstream clone, with port patches
 ├── tools/
+│   ├── wad_audit.py            read-only WAD lump-category byte audit
+│   ├── trim_wad.py             produces a trimmed IWAD that fits flash
 │   ├── bake_textures.py        offline column-table baker
 │   └── flash_wad.sh            esptool wrapper for the wad partition
 └── main/
@@ -142,6 +207,46 @@ dcsgonefw-doom/
     ├── baked_textures.c        generated by bake_textures.py
     └── r_baked.h               struct for the baked tables
 ```
+
+## WAD trim pipeline
+
+`tools/wad_audit.py` reads any IWAD and prints a category breakdown
+(music, SFX, sprites, flats, patches, maps grouped by episode, etc.)
+so you can see what to cut. `tools/trim_wad.py` then cuts. Both are
+read-only against the source WAD; they write a new IWAD.
+
+```sh
+python3 tools/wad_audit.py DOOM.WAD                    # see what's there
+python3 tools/trim_wad.py --list-strippable            # category list
+python3 tools/trim_wad.py DOOM.WAD --strip all --prune-unused --dry-run
+python3 tools/trim_wad.py DOOM.WAD OUT.WAD --strip music,sfx,e4 ...
+```
+
+`--prune-unused` walks every kept map's SIDEDEFS / SECTORS, expands
+through TEXTURE1/2 + PNAMES + the animation + switch tables, and drops
+patches/flats nothing references. Vanilla DOOM has tightly-packed
+assets so this typically only saves a few KiB once E4 maps are also
+gone — the headline savings come from the strippable categories
+(music + SFX + speaker = ~2 MiB on Ultimate Doom).
+
+`--pack` does WadPtr-style lossless transformations:
+
+- **SIDEDEFS row dedup**: typically half of all SIDEDEFS bytes in a
+  vanilla map are duplicates (corridors with same texture both sides).
+  Saves ~470 KiB on E1+E2+E3.
+- **BLOCKMAP cell merge**: blocklists with identical content are
+  shared. Saves ~75 KiB.
+
+`--squash-patches` deduplicates identical columns within each wall-
+texture patch (P_*) — full-wall patches like W110_1 / WALL24_1
+contain many identical columns. Saves ~85 KiB.
+
+The writer additionally merges identical lumps by sharing directory
+offsets (~26 KiB on Ultimate Doom).
+
+All four are lossless and produce a standard WAD readable by any
+source port. See `--help` for the full flag list and the conservative
+allow-list.
 
 ## What this isn't
 

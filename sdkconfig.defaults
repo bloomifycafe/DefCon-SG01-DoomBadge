@@ -13,7 +13,16 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # ────────── Speed ──────────
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
-CONFIG_COMPILER_OPTIMIZATION_PERF=y       # -O2
+# Optimize for size, not speed. The renderer was -O2; -Os typically loses
+# a few percent FPS on it but saves ~80 KiB of flash, which we trade for
+# a bigger WAD partition. If FPS regression is measurable, restore
+# OPTIMIZATION_PERF and add __attribute__((optimize("O2"))) to the
+# R_DrawColumn family in r_draw.c.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y       # -Os
+# (LTO would be the next lever — ESP-IDF v5.5.2 doesn't expose it as a
+# Kconfig option; enabling whole-program LTO requires plumbing -flto
+# into target_compile_options and link_options manually, plus rebuilding
+# IDF components. Worth ~30–60 KiB if needed.)
 CONFIG_FREERTOS_HZ=1000
 
 # ────────── Reclaim every byte of RAM for DOOM ──────────
@@ -89,8 +98,13 @@ CONFIG_ESP_INT_WDT_TIMEOUT_MS=10000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # ────────── Logging — strip strings to save flash + CPU ──────────
-CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+# LEVEL_NONE drops every ESP_LOG* format string from the binary (≈10–30
+# KiB of .rodata strings). Switch to LOG_DEFAULT_LEVEL_WARN locally if
+# debugging boot — see sdkconfig.debug.example for an override snippet.
+CONFIG_LOG_DEFAULT_LEVEL_NONE=y
 CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT=y
+# Bootloader logging — only useful during partition-table bring-up.
+CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y
 
 # ────────── Newlib nano — smaller printf, less static RAM ──────────
 # Saves ~5-8 KB of static RAM that the full newlib's stdio buffers eat.

@@ -1,18 +1,32 @@
 # Name,    Type,  SubType,  Offset,    Size,     Flags
 # Custom partition layout for ESP32-C6 8 MB flash:
-#   nvs   — 16 KB persistent player config (kept for future use)
-#   ota_0 — 2 MB app slot (no OTA, this is just where the firmware lives)
-#   wad   — 5 MB raw flash containing DOOM1.WAD. mmap'd at runtime via
-#           esp_partition_mmap — NOT a filesystem. Flash separately with
-#           tools/flash_wad.sh after `idf.py build flash`.
+#   nvs   — 16 KB (kept for future use; nvs_flash subsystem is currently
+#           NOT initialised at runtime — see main/main.c)
+#   ota_0 — 1 MB app slot. Current release binary is well under that
+#           (~600 KB; Arc 0 -Os shrink targets ≤450 KB). If a future
+#           build edges past 1 MiB, esptool will refuse to flash —
+#           clear, early failure mode.
+#   wad   — 7 MiB raw flash for the trimmed DOOM WAD. mmap'd at runtime
+#           via esp_partition_mmap — NOT a filesystem. Flash separately
+#           with tools/flash_wad.sh after `idf.py build flash`.
 # Type/subtype 0x40 / 0x46 are deliberately outside ESP-IDF's reserved
 # ranges so no IDF subsystem tries to interpret them.
-# IMPORTANT: shareware DOOM1.WAD is 4,196,020 bytes — slightly OVER 4 MiB
-# because the lump directory tail spills past the 4 MiB boundary. A 4 MiB
-# partition truncates the last ~107 directory entries (including F_START)
-# and W_AddFile fills lumpinfo[1156..] with whatever flash sits past the
-# partition. DOOM then can't find F_START / sprites / sounds and crashes
-# in R_InitFlats. 5 MiB fits the full shareware WAD with headroom.
+# WAD sizing reference (numbers from tools/wad_audit.py + trim_wad.py
+# with --strip all --prune-unused --pack --squash-patches):
+#   - shareware DOOM1.WAD                                    4.0 MiB  ✓ fits
+#   - DOOM_TRIM_E12.WAD  (E1+E2,  18 maps + WadPtr-style packing)
+#                                                            ~5.7 MiB ✓ fits
+#   - DOOM_TRIM_E123.WAD (E1+E2+E3, 27 maps + packing)
+#                                                            ~7.2 MiB ✓ fits
+# The "pack" pipeline does WadPtr-style lossless dedup of SIDEDEFS rows
+# (about half the SIDEDEFS bytes are duplicates), BLOCKMAP cells, and
+# patch columns; "screens"/"intermission"/"fullscreens" are content-
+# substituted with a 13-byte transparent placeholder (lump name kept so
+# V_DrawPatch doesn't I_Error).
+#
+# Layout: 640 KiB app + 7.31 MiB wad. Binary is currently 497 KiB so
+# 143 KiB growth headroom; wad partition fits the 7.20 MiB E1+E2+E3
+# trim with ~110 KiB headroom.
 nvs,       data,  nvs,      0x9000,    0x4000,
-ota_0,     app,   ota_0,    0x10000,   0x200000,
-wad,       0x40,  0x46,     0x210000,  0x500000,
+ota_0,     app,   ota_0,    0x10000,   0xA0000,
+wad,       0x40,  0x46,     0xB0000,   0x750000,

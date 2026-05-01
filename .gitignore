@@ -15,8 +15,13 @@
 # The DOOM shareware WAD is copyrighted by id Software. Don't ship it.
 # Get it legally and run tools/flash_wad.sh to put it in flash.
 /DOOM1.WAD
+/DOOM.WAD
+/DOOM_TRIM*.WAD
 *.wad
 *.WAD
+
+# Python cache from tools/wad_audit.py / trim_wad.py
+/tools/__pycache__/
 
 # Bake output. Regenerated from the WAD by tools/bake_textures.py.
 # Committed because it lets people clone-and-build without the WAD.

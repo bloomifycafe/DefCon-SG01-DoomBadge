@@ -34,8 +34,12 @@ idf_component_register(
         esp_driver_rmt
         esp_lcd
         esp_timer
-        nvs_flash
         esp_partition
+        # `vfs` is kept because newlib's `_open` / `_read` syscall stubs
+        # link through it. Removing it broke the link in early
+        # experiments. The fopen calls in DOOM (savegames, config,
+        # response files) all fail gracefully when no VFS is registered,
+        # which is what we want.
         vfs
         button
         led_strip

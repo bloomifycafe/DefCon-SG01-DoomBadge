@@ -69,15 +69,24 @@ def main():
     if fallback_lump < 0:
         sys.exit("no valid patch lumps found — bake cannot proceed")
 
-    # ── TEXTURE1 ────────────────────────────────────────────────────────
+    # ── TEXTURE1 (always) + TEXTURE2 (full / commercial DOOM only) ─────
+    # r_data.c::R_InitTextures reads TEXTURE1 then optionally TEXTURE2,
+    # concatenating them: numtextures = numtextures1 + numtextures2, with
+    # texture index 0..numtextures1-1 served from TEXTURE1 and the rest
+    # from TEXTURE2. Our baked output must match this ordering exactly.
+    tex_lumps = []
     ti = find_lump_last(lumps, "TEXTURE1")
     if ti < 0:
         sys.exit("TEXTURE1 lump not found in WAD")
     _, t_off, _ = lumps[ti]
-    numtextures = struct.unpack("<I", data[t_off:t_off + 4])[0]
-    tex_offsets = struct.unpack(
-        "<%di" % numtextures, data[t_off + 4: t_off + 4 + numtextures * 4]
-    )
+    n1 = struct.unpack("<I", data[t_off:t_off + 4])[0]
+    tex_lumps.append(("TEXTURE1", t_off, n1))
+    ti2 = find_lump_last(lumps, "TEXTURE2")
+    if ti2 >= 0:
+        _, t2_off, _ = lumps[ti2]
+        n2 = struct.unpack("<I", data[t2_off:t2_off + 4])[0]
+        tex_lumps.append(("TEXTURE2", t2_off, n2))
+    numtextures = sum(n for _, _, n in tex_lumps)
 
     # ── Generate per-texture column tables ──────────────────────────────
     out = []
@@ -90,8 +99,17 @@ def main():
     total_collump_bytes = 0
     total_colofs_bytes = 0
 
-    for ti in range(numtextures):
-        td = t_off + tex_offsets[ti]
+    # Walk both TEXTURE lumps in order, emitting a single contiguous
+    # 0..numtextures-1 table.
+    global_ti = 0
+    for tex_lump_name, t_off, num in tex_lumps:
+      tex_offsets = struct.unpack(
+          "<%di" % num, data[t_off + 4: t_off + 4 + num * 4]
+      )
+      for local_ti in range(num):
+        ti = global_ti
+        global_ti += 1
+        td = t_off + tex_offsets[local_ti]
         name8 = data[td:td + 8].rstrip(b"\x00").decode(
             "ascii", "replace").upper()
         # masked at td+8..td+12 (unused)

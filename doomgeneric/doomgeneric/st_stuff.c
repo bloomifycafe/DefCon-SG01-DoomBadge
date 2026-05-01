@@ -415,21 +415,22 @@ void ST_Stop(void);
 
 void ST_refreshBackground(void)
 {
-
+    /* ESP32-C6 PORT: vanilla path drew the status bar into a separate
+     * `st_backing_screen` (ST_WIDTH * ST_HEIGHT = 10 KiB Z_Malloc'd
+     * in ST_Init) and then V_CopyRect'd it onto the framebuffer at
+     * (ST_X, ST_Y). The intermediate buffer was needed for the SDL
+     * port's double-buffer compositing — but our DG_DrawFrame blits
+     * the framebuffer directly to the LCD every tick, so we can
+     * bypass the backing buffer and draw the SBAR patch straight to
+     * I_VideoBuffer at the bottom strip. Saves 10 KiB of zone every
+     * level — load-bearing for E1+E2 maps with denser geometry. */
     if (st_statusbaron)
     {
-        V_UseBuffer(st_backing_screen);
+        V_DrawPatch(ST_X, ST_Y, sbar);
 
-	V_DrawPatch(ST_X, 0, sbar);
-
-	if (netgame)
-	    V_DrawPatch(ST_FX, 0, faceback);
-
-        V_RestoreBuffer();
-
-	V_CopyRect(ST_X, 0, st_backing_screen, ST_WIDTH, ST_HEIGHT, ST_X, ST_Y);
+        if (netgame)
+            V_DrawPatch(ST_FX, ST_Y, faceback);
     }
-
 }
 
 
@@ -1411,6 +1412,10 @@ void ST_Stop (void)
 void ST_Init (void)
 {
     ST_loadData();
-    st_backing_screen = (byte *) Z_Malloc(ST_WIDTH * ST_HEIGHT, PU_STATIC, 0);
+    /* ESP32-C6 PORT: st_backing_screen no longer allocated — the status
+     * bar is drawn directly to I_VideoBuffer in ST_refreshBackground.
+     * The variable itself stays declared for any external reference,
+     * but it's NULL throughout. */
+    st_backing_screen = NULL;
 }
 

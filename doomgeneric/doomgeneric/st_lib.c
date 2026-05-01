@@ -115,7 +115,16 @@ STlib_drawNum
     if (n->y - ST_Y < 0)
 	I_Error("drawNum: n->y - ST_Y < 0");
 
-    V_CopyRect(x, n->y - ST_Y, st_backing_screen, w*numdigits, h, x, n->y);
+    /* ESP32-C6 PORT: st_backing_screen is NULL on this build (see
+     * st_stuff.c — the status-bar backing buffer was dropped to free
+     * 10 KiB of zone). The V_CopyRect was originally an "erase the old
+     * digit before drawing new" operation; since ST_refreshBackground
+     * now redraws the full SBAR patch every frame, the old digit gets
+     * overwritten by SBAR before this update runs anyway. Skip. */
+    if (st_backing_screen != NULL) {
+        V_CopyRect(x, n->y - ST_Y, st_backing_screen,
+                   w*numdigits, h, x, n->y);
+    }
 
     // if non-number, do not draw it
     if (num == 1994)
@@ -223,7 +232,11 @@ STlib_updateMultIcon
 	    if (y - ST_Y < 0)
 		I_Error("updateMultIcon: y - ST_Y < 0");
 
-	    V_CopyRect(x, y-ST_Y, st_backing_screen, w, h, x, y);
+	    /* ESP32-C6 PORT: see drawNum above — st_backing_screen is
+	     * NULL; SBAR redraws cover the old icon. */
+	    if (st_backing_screen != NULL) {
+	        V_CopyRect(x, y-ST_Y, st_backing_screen, w, h, x, y);
+	    }
 	}
 	V_DrawPatch(mi->x, mi->y, mi->p[*mi->inum]);
 	mi->oldinum = *mi->inum;
@@ -274,7 +287,9 @@ STlib_updateBinIcon
 
 	if (*bi->val)
 	    V_DrawPatch(bi->x, bi->y, bi->p);
-	else
+	else if (st_backing_screen != NULL)
+	    /* ESP32-C6 PORT: NULL backing buffer; the SBAR redraw in
+	     * ST_refreshBackground covers the cleared icon area. */
 	    V_CopyRect(x, y-ST_Y, st_backing_screen, w, h, x, y);
 
 	bi->oldval = *bi->val;

@@ -16,7 +16,6 @@
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "esp_timer.h"
-#include "nvs_flash.h"
 #include "driver/gpio.h"
 
 #include "doomgeneric.h"
@@ -109,7 +108,9 @@ void app_main(void)
     ESP_LOGI(TAG, " DEFCON SG 1 — DOOM ");
     ESP_LOGI(TAG, "══════════════════════════════════════");
 
-    ESP_ERROR_CHECK(nvs_flash_init());
+    /* nvs_flash_init() removed — we never call nvs_get/nvs_set, so the
+     * NVS subsystem (and its ~10 KiB of code) is dead weight. The nvs
+     * partition stays in partitions.csv for forward compat. */
     check_wad_partition();
 
     /* Memory ordering for the heap-pressured boot:

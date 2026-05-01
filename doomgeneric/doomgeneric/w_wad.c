@@ -95,9 +95,11 @@ unsigned int W_LumpNameHash(const char *s)
 // contiguous block, which our fragmented post-IDF heap can't deliver
 // even when esp_get_free_heap_size reports plenty. Moving it to a fixed
 // static pool sidesteps the allocator entirely — link-time reservation,
-// no fragmentation. Shareware DOOM1.WAD has 1264 lumps; sized for
-// margin. If a PWAD pushes us over, we I_Error explicitly.
-#define LUMPINFO_POOL_MAX 1300
+// no fragmentation. Sized for the largest IWAD we ship: the packed
+// E1+E2+E3 trim has 1908 lumps; 2400 gives ~500 entries of headroom
+// for small PWADs or less-aggressive trims. 2400 × 8 B = 18.75 KiB .bss.
+// If a PWAD pushes us over, we I_Error explicitly.
+#define LUMPINFO_POOL_MAX 2400
 static lumpinfo_t lumpinfo_pool[LUMPINFO_POOL_MAX];
 
 // Increase the size of the lumpinfo[] array to the specified size.

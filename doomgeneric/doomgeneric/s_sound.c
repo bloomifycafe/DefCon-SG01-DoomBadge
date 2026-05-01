@@ -193,6 +193,13 @@ void S_Start(void)
     int cnum;
     int mnum;
 
+    /* ESP32-C6 PORT: skip channel cleanup when sound is disabled
+     * (channels[] never allocated; see S_UpdateSounds note above).
+     * Music change at the bottom is still attempted — S_ChangeMusic
+     * will soft-fail on the missing D_* lump. */
+    if (channels == NULL)
+        goto start_music;
+
     // kill all playing sounds at start of level
     //  (trust me - a good idea)
     for (cnum=0 ; cnum<snd_channels ; cnum++)
@@ -203,6 +210,7 @@ void S_Start(void)
         }
     }
 
+start_music:
     // start new music for the level
     mus_paused = 0;
 
@@ -244,6 +252,7 @@ void S_StopSound(mobj_t *origin)
 {
     int cnum;
 
+    if (channels == NULL) return;   /* ESP32-C6 PORT: see S_UpdateSounds */
     for (cnum=0 ; cnum<snd_channels ; cnum++)
     {
         if (channels[cnum].sfxinfo && channels[cnum].origin == origin)
@@ -397,6 +406,8 @@ void S_StartSound(void *origin_p, int sfx_id)
     int cnum;
     int volume;
 
+    if (channels == NULL) return;   /* ESP32-C6 PORT: see S_UpdateSounds */
+
     origin = (mobj_t *) origin_p;
     volume = snd_SfxVolume;
 
@@ -511,6 +522,15 @@ void S_UpdateSounds(mobj_t *listener)
     channel_t*        c;
 
     I_UpdateSound();
+
+    /* ESP32-C6 PORT: with FEATURE_SOUND undefined we skip S_Init in
+     * d_main.c, so the `channels` array is never Z_Malloc'd. Early-
+     * return here (and from other consumers below) so the tick loop
+     * can still call S_UpdateSounds without dereferencing NULL. */
+    if (channels == NULL)
+    {
+        return;
+    }
 
     for (cnum=0; cnum<snd_channels; cnum++)
     {
@@ -630,11 +650,29 @@ void S_ChangeMusic(int musicnum, int looping)
     // shutdown old music
     S_StopMusic();
 
-    // get lumpnum if neccessary
-    if (!music->lumpnum)
+    // ESP32-C6 PORT: tools/trim_wad.py strips every D_* music lump
+    // because FEATURE_SOUND is undefined and i_sound.c is no-ops.
+    // Bail early if the lump can't be found — vanilla used
+    // W_GetNumForName which I_Errors. We also cache -1 to avoid
+    // repeating the (failing) lookup on every title-cycle tick.
+    // The `<= 0` check works for both the zero-init "never looked up"
+    // state AND a cached -1 "looked up, missing" state.
+    if (music->lumpnum <= 0)
     {
-        M_snprintf(namebuf, sizeof(namebuf), "d_%s", DEH_String(music->name));
-        music->lumpnum = W_GetNumForName(namebuf);
+        if (music->lumpnum == 0)
+        {
+            M_snprintf(namebuf, sizeof(namebuf), "d_%s",
+                       DEH_String(music->name));
+            music->lumpnum = W_CheckNumForName(namebuf);
+            if (music->lumpnum < 0)
+            {
+                return;
+            }
+        }
+        else
+        {
+            return;     // already known missing
+        }
     }
 
     music->data = W_CacheLumpNum(music->lumpnum, PU_STATIC);

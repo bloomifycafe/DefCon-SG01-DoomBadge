@@ -155,15 +155,21 @@ static size_t esp32_Read(wad_file_t *file, unsigned int offset,
 /* Linker-wrapped via -Wl,--wrap=D_FindIWAD. Upstream's D_FindIWAD calls
  * D_FindWADByName which stat()s real filesystem paths — useless here
  * because the WAD lives in raw flash, not on a filesystem. We return a
- * constant filename (W_OpenFile is also wrapped so the actual path is
- * ignored downstream) and hardcode the mission to Doom 1 since this
- * port targets the shareware DOOM1.WAD. */
+ * constant filename and pin the mission to `doom` (Doom 1 family).
+ *
+ * NOTE: gamemode (shareware vs registered vs retail) is NOT pinned
+ * here. Setting `gamemission = doom` makes D_IdentifyVersion() probe
+ * the WAD for `E4M1` / `E3M1` lumps and choose retail / registered /
+ * shareware automatically — which matches whatever trim_wad.py shipped.
+ * If the trim drops E4 maps the badge correctly downgrades to
+ * `registered`, the episode menu hides E4 (m_menu.c:2118), and the
+ * intermission/finale graphics paths use the right gamemode. */
 char *__wrap_D_FindIWAD(int mask, GameMission_t *mission)
 {
     (void)mask;
     if (mission) *mission = doom;
     /* Non-NULL pointer so callers don't bail. The string itself is
      * referenced by DOOM in printf-style logging, so make it look right. */
-    static char fake_path[] = "DOOM1.WAD";
+    static char fake_path[] = "DOOM.WAD";
     return fake_path;
 }

@@ -128,9 +128,13 @@ typedef struct
 	byte b;
 } col_t;
 
-// Palette converted to RGB565
-
-static uint16_t rgb565_palette[256];
+/* ESP32-C6 PORT: rgb565_palette[256] removed (saves 512 B .bss). The
+ * loop that populated it has been commented out for years (see lines
+ * below); the only reader was I_GetPaletteIndex(), called exclusively
+ * by v_video.c's mouse-accel speed widget — gated by `usemouse` which
+ * is always false on the badge. The actual screen palette LUT lives in
+ * main/display.c (s_palette_565) and is rebuilt on I_SetPalette via
+ * the `palette_changed` flag. */
 
 void cmap_to_rgb565(uint16_t * out, uint8_t * in, int in_pixels)
 {
@@ -443,6 +447,15 @@ void I_SetPalette (byte* palette)
 
 int I_GetPaletteIndex (int r, int g, int b)
 {
+    /* ESP32-C6 PORT: vanilla scanned a 256-entry rgb565_palette[] for
+     * closest-match. That LUT is gone (see comment above). The only
+     * caller is v_video.c's mouse-accel widget which is unreachable on
+     * the badge (no mouse). Return 0 (palette index of the first
+     * PLAYPAL entry — typically black) so anything that does call this
+     * gets a sane stub. */
+    (void)r; (void)g; (void)b;
+    return 0;
+#if 0
     int best, best_diff, diff;
     int i;
     col_t color;
@@ -475,6 +488,7 @@ int I_GetPaletteIndex (int r, int g, int b)
     }
 
     return best;
+#endif  /* dead-code preserved for reference */
 }
 
 void I_BeginRead (void)

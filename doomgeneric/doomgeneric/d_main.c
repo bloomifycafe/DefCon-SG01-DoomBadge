@@ -592,6 +592,27 @@ void D_DoAdvanceDemo (void)
     {
         pagename = DEH_String("INTERPIC");
     }
+
+    // ESP32-C6 PORT: Ultimate Doom DOOM.WAD only has HELP1; the
+    // registered-mode title cycle asks for HELP2 which doesn't exist.
+    // Fall back to HELP1 (which trim_wad.py either kept or substituted
+    // with a placeholder so V_DrawPatch finds it).
+    //
+    // Additionally: tools/trim_wad.py replaces fullscreen graphics
+    // (HELP1/CREDIT/INTERPIC/etc.) with a 13-byte transparent
+    // placeholder to save flash. Drawing one of those at (0,0) paints
+    // nothing, so the framebuffer keeps the previous frame's menu
+    // contents and the next M_Drawer pass renders new menu items
+    // on top of stale ones. To avoid the bleed, swap any tiny page
+    // lump for TITLEPIC — the title cycle effectively pauses on the
+    // real graphic instead of flashing transparent.
+    {
+        int lump = W_CheckNumForName(pagename);
+        if (lump < 0 || W_LumpLength(lump) < 64)
+        {
+            pagename = DEH_String("TITLEPIC");
+        }
+    }
 }
 
 
@@ -1775,8 +1796,15 @@ void D_DoomMain (void)
     DEH_printf("\nP_Init: Init Playloop state.\n");
     P_Init ();
 
+    /* ESP32-C6 PORT: with FEATURE_SOUND undefined, i_sound.c is no-ops
+     * and the high-level S_Init() still runs and Z_Malloc's a
+     * `channel_t` array (snd_channels=8 → ~256 B). Skip it entirely on
+     * the badge — every byte counts and nothing reads `channels`
+     * without sound playback. */
+#ifdef FEATURE_SOUND
     DEH_printf("S_Init: Setting up sound.\n");
     S_Init (sfxVolume * 8, musicVolume * 8);
+#endif
 
     DEH_printf("D_CheckNetGame: Checking network game status.\n");
     D_CheckNetGame ();
