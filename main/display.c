@@ -17,6 +17,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
 #include "esp_lcd_panel_io.h"
@@ -54,6 +55,62 @@ static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_panel_handle_t    s_panel;
 static bool                      s_inited;
 
+/* DMA-completion semaphore. Each blit submits one transaction and then
+ * takes the semaphore — the on_color_trans_done callback gives it from
+ * the SPI ISR after DMA finishes. By the time submit_blit() returns the
+ * panel has finished reading s_chunk565 so the next iteration's pixel
+ * conversion is safe to overwrite it. Without this the loop body races
+ * the DMA on the shared buffer; doom's textured frames mostly mask the
+ * resulting per-row tearing but it's there. */
+static SemaphoreHandle_t s_dma_done;
+
+static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
+                                          esp_lcd_panel_io_event_data_t *edata,
+                                          void *user_ctx)
+{
+    (void)panel_io; (void)edata; (void)user_ctx;
+    BaseType_t hp_task_woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_dma_done, &hp_task_woken);
+    return hp_task_woken == pdTRUE;
+}
+
+/* Synchronous blit helper: submit, then block until DMA done. */
+static inline void submit_blit(int x_start, int y_start, int x_end, int y_end,
+                               const void *pixels)
+{
+    esp_lcd_panel_draw_bitmap(s_panel, x_start, y_start, x_end, y_end, pixels);
+    xSemaphoreTake(s_dma_done, portMAX_DELAY);
+}
+
+/* Extra ST7789 init commands (Bodmer/TFT_eSPI JLX240 reference) for the
+ * registers IDF's built-in init leaves at silicon factory defaults: porch,
+ * gate, VCOM, power, gamma. Pinning these eliminates the per-unit factory
+ * NVM lottery on this panel class and is the single biggest win for
+ * static-frame stability. */
+static void apply_st7789_quality_init(void)
+{
+#define TX(cmd, ...) do { \
+    static const uint8_t _d[] = {__VA_ARGS__}; \
+    esp_lcd_panel_io_tx_param(s_io, (cmd), _d, sizeof(_d)); \
+} while (0)
+    TX(0xB2, 0x0C, 0x0C, 0x00, 0x33, 0x33);
+    TX(0xB7, 0x35);
+    TX(0xBB, 0x28);
+    TX(0xC0, 0x0C);
+    TX(0xC2, 0x01, 0xFF);
+    TX(0xC3, 0x10);
+    TX(0xC4, 0x20);
+    TX(0xC6, 0x0F);
+    TX(0xD0, 0xA4, 0xA1);
+    TX(0xE0, 0xD0,0x00,0x02,0x07,0x0A,0x28,0x32,0x44,0x42,0x06,0x0E,0x12,0x14,0x17);
+    TX(0xE1, 0xD0,0x00,0x02,0x07,0x0A,0x28,0x31,0x54,0x47,0x0E,0x1C,0x17,0x1B,0x1E);
+    /* RAMCTRL: explicit big-endian on the wire so our pre-byte-swapped
+     * RGB565 buffers blit raw without color corruption. Defends against
+     * IDF GH#11416 where the default value occasionally lands wrong. */
+    TX(0xB0, 0x00, 0xE0);
+#undef TX
+}
+
 #define DOOM_W 320
 #define DOOM_H 200
 #define DOOM_PIXELS (DOOM_W * DOOM_H)
@@ -76,16 +133,27 @@ static inline uint16_t rgb565_be(uint8_t r, uint8_t g, uint8_t b)
     return (uint16_t)((v >> 8) | (v << 8));
 }
 
-/* RGB565-packed mirror of doomgeneric's colors[256]. Rebuilt lazily
- * (only when palette_changed flips true) so the per-pixel inner loop
- * stays a single LUT lookup — no math per pixel. */
-static uint16_t s_palette_565[256];
+/* CRT scanline effect: every other panel row uses the dimmed LUT so the
+ * frame has alternating bright/dim horizontal lines. Side benefits beyond
+ * the retro look: visually masks any per-row SPI tearing (since alternate
+ * rows are *expected* to differ in brightness), and makes residual
+ * panel-level pixel noise blend into the natural row variation.
+ *
+ * SCANLINE_BRIGHT_NUM/256 is the dim factor — 192/256 = 75% (subtle, more
+ * playable), 160/256 = 62%, 128/256 = 50% (full CRT vibe but darker). */
+#define SCANLINE_BRIGHT_NUM 192
+
+static uint16_t s_palette_565[256];        /* bright row */
+static uint16_t s_palette_565_dim[256];    /* dim row (scanline) */
 
 static void rebuild_palette_lut(void)
 {
     for (int i = 0; i < 256; i++) {
-        /* colors[i] is BGRA bitfield order (per i_video.h::struct color). */
-        s_palette_565[i] = rgb565_be(colors[i].r, colors[i].g, colors[i].b);
+        uint8_t r = colors[i].r, g = colors[i].g, b = colors[i].b;
+        s_palette_565[i]     = rgb565_be(r, g, b);
+        s_palette_565_dim[i] = rgb565_be((r * SCANLINE_BRIGHT_NUM) >> 8,
+                                         (g * SCANLINE_BRIGHT_NUM) >> 8,
+                                         (b * SCANLINE_BRIGHT_NUM) >> 8);
     }
     palette_changed = 0;
 }
@@ -120,10 +188,13 @@ esp_err_t display_init(void)
         if (err != ESP_OK) return err;
     }
 
-    /* Seed with a grey ramp so the screen isn't garbage before DOOM's
-     * first I_SetPalette call. */
+    /* Seed both LUTs with a grey ramp so the screen isn't garbage before
+     * DOOM's first I_SetPalette call. */
     for (int i = 0; i < 256; i++) {
-        s_palette_565[i] = rgb565_be(i, i, i);
+        s_palette_565[i]     = rgb565_be(i, i, i);
+        s_palette_565_dim[i] = rgb565_be((i * SCANLINE_BRIGHT_NUM) >> 8,
+                                         (i * SCANLINE_BRIGHT_NUM) >> 8,
+                                         (i * SCANLINE_BRIGHT_NUM) >> 8);
     }
     palette_changed = 1;   /* force a rebuild on the very first blit */
 
@@ -150,6 +221,30 @@ esp_err_t display_init(void)
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg, &s_io));
 
+    /* Binary semaphore starts EMPTY. submit_blit() submits one DMA
+     * transaction, then takes the semaphore — the on_color_trans_done
+     * ISR gives it when the panel finishes reading the chunk. */
+    s_dma_done = xSemaphoreCreateBinary();
+    if (!s_dma_done) {
+        ESP_LOGE(TAG, "could not create DMA-done semaphore");
+        return ESP_ERR_NO_MEM;
+    }
+    const esp_lcd_panel_io_callbacks_t cbs = {
+        .on_color_trans_done = on_color_trans_done,
+    };
+    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(s_io, &cbs, NULL));
+
+    /* FPC signal-integrity tuning: lower SCK/MOSI drive (ringing → bit
+     * flips on ribbon cable), pull-ups on CS/DC. CAP_1 trades a tiny
+     * speed margin for clean edges on this badge revision. Must run
+     * after esp_lcd_new_panel_io_spi which (re)configures the iomux. */
+    gpio_set_drive_capability(PIN_SCK,  GPIO_DRIVE_CAP_1);
+    gpio_set_drive_capability(PIN_MOSI, GPIO_DRIVE_CAP_1);
+    gpio_set_drive_capability(PIN_CS,   GPIO_DRIVE_CAP_0);
+    gpio_set_drive_capability(PIN_DC,   GPIO_DRIVE_CAP_0);
+    gpio_set_pull_mode(PIN_CS, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(PIN_DC, GPIO_PULLUP_ONLY);
+
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = PIN_RST,
         .rgb_endian     = LCD_RGB_ENDIAN_RGB,
@@ -159,6 +254,7 @@ esp_err_t display_init(void)
 
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
+    apply_st7789_quality_init();
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));
@@ -181,16 +277,12 @@ static void clear_letterbox_margins(void)
     const int top_margin = (DISPLAY_HEIGHT - DOOM_H) / 2;  /* 20 */
     memset(s_chunk565, 0, CHUNK_PIXELS * 2);
     /* Top bar (20 rows = 16 + 4). */
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 0,
-                              DISPLAY_WIDTH, CHUNK_ROWS, s_chunk565);
-    esp_lcd_panel_draw_bitmap(s_panel, 0, CHUNK_ROWS,
-                              DISPLAY_WIDTH, top_margin, s_chunk565);
+    submit_blit(0, 0,         DISPLAY_WIDTH, CHUNK_ROWS,  s_chunk565);
+    submit_blit(0, CHUNK_ROWS, DISPLAY_WIDTH, top_margin, s_chunk565);
     /* Bottom bar. */
     int bot_y = DISPLAY_HEIGHT - top_margin;
-    esp_lcd_panel_draw_bitmap(s_panel, 0, bot_y,
-                              DISPLAY_WIDTH, bot_y + CHUNK_ROWS, s_chunk565);
-    esp_lcd_panel_draw_bitmap(s_panel, 0, bot_y + CHUNK_ROWS,
-                              DISPLAY_WIDTH, DISPLAY_HEIGHT, s_chunk565);
+    submit_blit(0, bot_y,                DISPLAY_WIDTH, bot_y + CHUNK_ROWS,  s_chunk565);
+    submit_blit(0, bot_y + CHUNK_ROWS,   DISPLAY_WIDTH, DISPLAY_HEIGHT,      s_chunk565);
 }
 
 void display_blit_doom_frame(const uint8_t *fb320x200)
@@ -208,28 +300,34 @@ void display_blit_doom_frame(const uint8_t *fb320x200)
 
     for (int y = 0; y < DOOM_H; y += CHUNK_ROWS) {
         int rows = (y + CHUNK_ROWS <= DOOM_H) ? CHUNK_ROWS : (DOOM_H - y);
-        const uint8_t *src = fb320x200 + (size_t)y * DOOM_W;
-        uint16_t      *dst = s_chunk565;
 
-        /* 8-pixel unroll on the inner loop. `rows * DOOM_W` is divisible
-         * by 8 for any rows >= 1 since DOOM_W = 320. */
-        int n = (rows * DOOM_W) / 8;
-        while (n--) {
-            dst[0] = s_palette_565[src[0]];
-            dst[1] = s_palette_565[src[1]];
-            dst[2] = s_palette_565[src[2]];
-            dst[3] = s_palette_565[src[3]];
-            dst[4] = s_palette_565[src[4]];
-            dst[5] = s_palette_565[src[5]];
-            dst[6] = s_palette_565[src[6]];
-            dst[7] = s_palette_565[src[7]];
-            src += 8;
-            dst += 8;
+        /* Convert one row at a time so we can swap the LUT per row for
+         * the scanline effect. The 8-pixel unroll is preserved inside
+         * the row; per-row overhead is one pointer assignment. */
+        for (int yy = 0; yy < rows; yy++) {
+            int panel_y = top_margin + y + yy;
+            const uint16_t *lut = (panel_y & 1) ? s_palette_565_dim
+                                                : s_palette_565;
+            const uint8_t *src  = fb320x200 + (size_t)(y + yy) * DOOM_W;
+            uint16_t      *dst  = s_chunk565 + (size_t)yy * DOOM_W;
+
+            int n = DOOM_W / 8;
+            while (n--) {
+                dst[0] = lut[src[0]];
+                dst[1] = lut[src[1]];
+                dst[2] = lut[src[2]];
+                dst[3] = lut[src[3]];
+                dst[4] = lut[src[4]];
+                dst[5] = lut[src[5]];
+                dst[6] = lut[src[6]];
+                dst[7] = lut[src[7]];
+                src += 8;
+                dst += 8;
+            }
         }
 
-        esp_lcd_panel_draw_bitmap(s_panel,
-                                  0, top_margin + y,
-                                  DOOM_W, top_margin + y + rows,
-                                  s_chunk565);
+        submit_blit(0, top_margin + y,
+                    DOOM_W, top_margin + y + rows,
+                    s_chunk565);
     }
 }

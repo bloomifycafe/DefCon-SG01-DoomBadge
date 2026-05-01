@@ -123,6 +123,40 @@ ALWAYS_KEEP_TEXTURES = {"SKY1", "SKY2", "SKY3"}  # SKY4 is E4-only
 # Flats that the engine treats specially; F_SKY1 is the sky sentinel.
 ALWAYS_KEEP_FLATS = {"F_SKY1"}
 
+# Small intermission lumps that render the post-level scoreboard's text
+# and digits — collectively ~21 KiB. Substituting them with transparent
+# placeholders makes the scoreboard invisible (kills %, time, par, etc.
+# all draw as 1×1 transparent), which made the level-end transition
+# feel completely broken. Costs are tiny so we keep them verbatim and
+# only substitute the bulk-byte intermission lumps (WIMAP* backgrounds,
+# WILV* level-name banners, WIA* animations).
+INTERMISSION_KEEP_NAMES = {
+    # Digits + percent + colon + minus
+    "WINUM0", "WINUM1", "WINUM2", "WINUM3", "WINUM4",
+    "WINUM5", "WINUM6", "WINUM7", "WINUM8", "WINUM9",
+    "WIPCNT", "WICOLON", "WIMINUS",
+    # Labels
+    "WITIME", "WIPAR", "WIENTER",
+    "WIKILRS", "WIVCTMS", "WIFRGS", "WISUCKS",
+    "WISCRT2",     # "secret" header
+    # "you are here" pointer-attached labels (used in episode finale)
+    "WIOSTK", "WIOSTI", "WIOSTS", "WIOSTF", "WIF",
+    # Singleplayer/coop result-line graphics
+    "WIP1", "WIP2", "WIP3", "WIP4",
+    "WIBP1", "WIBP2", "WIBP3", "WIBP4",
+    # World maps — the per-episode background showing the player's
+    # progress through the levels. 66 KiB each. Keep WIMAP0 (E1
+    # "Knee-Deep in the Dead") and WIMAP1 (E2 "Shores of Hell"); the
+    # 132 KiB cost fits a 576 KiB-app + 7552 KiB-wad partition layout
+    # without further binary shrinks. WIMAP2 (E3 "Inferno") would
+    # need a third 66 KiB which only fits if the binary shrinks below
+    # 512 KiB — not currently achievable, so E3 lands on a
+    # placeholder background. Worth revisiting once the bake table
+    # gets a single-patch compaction pass (102 of 287 textures could
+    # halve their collump bytes).
+    "WIMAP0", "WIMAP1",
+}
+
 ALL_STRIPPABLE = [
     "music", "sfx", "speaker", "sndcfg",
     "demos", "endoom", "screens", "intermission", "titlepic",
@@ -153,7 +187,10 @@ FULLSCREEN_LUMPS = {
     "INTERPIC", "BOSSBACK", "ENDPIC",
     "HELP", "HELP1", "HELP2", "CREDIT",
     "PFUB1", "PFUB2",
-    "WIMAP0", "WIMAP1", "WIMAP2",
+    # WIMAP0/1/2 (per-episode world maps) intentionally NOT here —
+    # they're moved to INTERMISSION_KEEP_NAMES so the player can see
+    # progression on the post-level scoreboard. ~200 KiB cost; the
+    # app partition slot in partitions.csv was tightened accordingly.
 }
 
 
@@ -271,23 +308,18 @@ def categorize_for_strip(lumps):
         if name in FULLSCREEN_LUMPS:
             cats[i] = "fullscreens"
             continue
-        if (name in ("INTERPIC", "BOSSBACK")
+        # Intermission cat: only the BIG byte-cost ones get strippable.
+        # Digits/labels/percent stay in the WAD verbatim so the scoreboard
+        # at level-end actually renders something readable; without them
+        # the score area is fully transparent and the level transition
+        # looks like a freeze.
+        if name in INTERMISSION_KEEP_NAMES:
+            pass    # leave cats[i] = None → kept verbatim
+        elif (name in ("INTERPIC", "BOSSBACK")
                 or name.startswith("WIMAP")
                 or name.startswith("WILV")
                 or name.startswith("WIA")
-                or name.startswith("WIF")
-                or name.startswith("WIB")
-                or name.startswith("WIP")
-                or name.startswith("WIH")
-                or name.startswith("WIO")
-                or name.startswith("WIN")
-                or name.startswith("WIK")
-                or name.startswith("WIV")
-                or name.startswith("WIS")
-                or name.startswith("WIE")
-                or name.startswith("WIT")
-                or name.startswith("WIC")
-                or name == "WIMINUS"):
+                or name.startswith("WIH")):
             cats[i] = "intermission"
             continue
 

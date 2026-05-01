@@ -24,9 +24,15 @@
 # substituted with a 13-byte transparent placeholder (lump name kept so
 # V_DrawPatch doesn't I_Error).
 #
-# Layout: 640 KiB app + 7.31 MiB wad. Binary is currently 497 KiB so
-# 143 KiB growth headroom; wad partition fits the 7.20 MiB E1+E2+E3
-# trim with ~110 KiB headroom.
+# Layout: 576 KiB app + 7.375 MiB wad. Binary is currently ~575 KiB
+# (it grew when bake_textures.py learned to handle TEXTURE2's 287
+# textures, and again when the trim WAD started keeping WIMAP0/WIMAP1
+# verbatim for the intermission world map). Slack in the app slot is
+# ~1 KiB — tight; if a future change pushes the binary past 576 KiB
+# you must either shrink it again (look at the 102 single-patch
+# textures in baked_textures.c — each currently emits a full
+# `width`-entry uint16 array of identical values, ripe for a 1-entry
+# compaction) or grow the app slot at the wad's expense.
 nvs,       data,  nvs,      0x9000,    0x4000,
-ota_0,     app,   ota_0,    0x10000,   0xA0000,
-wad,       0x40,  0x46,     0xB0000,   0x750000,
+ota_0,     app,   ota_0,    0x10000,   0x90000,
+wad,       0x40,  0x46,     0xA0000,   0x760000,
