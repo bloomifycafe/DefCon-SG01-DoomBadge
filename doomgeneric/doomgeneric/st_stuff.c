@@ -1055,18 +1055,25 @@ void ST_diffDraw(void)
 
 void ST_Drawer (boolean fullscreen, boolean refresh)
 {
-  
+
     st_statusbaron = (!fullscreen) || automapactive;
     st_firsttime = st_firsttime || refresh;
 
     // Do red-/gold-shifts from damage/items
     ST_doPaletteStuff();
 
-    // If just after ST_Start(), refresh all
-    if (st_firsttime) ST_doRefresh();
-    // Otherwise, update as little as possible
-    else ST_diffDraw();
-
+    /* ESP32-C6 PORT: vanilla took the ST_diffDraw fast path on most
+     * frames (only redraws widgets whose value changed) and relied on
+     * each widget's V_CopyRect to erase the previous value's pixels
+     * from a saved st_backing_screen buffer. We dropped that buffer
+     * to free 10 KiB of zone (st_stuff.c::ST_Init), which left stale
+     * digits stacking on top of each other every time a value's digit
+     * count changed (e.g. 100 -> 99, or 9 -> 10 on bullet pickup).
+     * Always do the full refresh: ST_refreshBackground() repaints
+     * SBAR (one V_DrawPatch on a 32-row strip — cheap on this LCD)
+     * which clears the digit boxes, and then the widgets paint on
+     * top of clean SBAR. */
+    ST_doRefresh();
 }
 
 typedef void (*load_callback_t)(char *lumpname, patch_t **variable); 

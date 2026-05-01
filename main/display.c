@@ -104,10 +104,12 @@ static void apply_st7789_quality_init(void)
     TX(0xD0, 0xA4, 0xA1);
     TX(0xE0, 0xD0,0x00,0x02,0x07,0x0A,0x28,0x32,0x44,0x42,0x06,0x0E,0x12,0x14,0x17);
     TX(0xE1, 0xD0,0x00,0x02,0x07,0x0A,0x28,0x31,0x54,0x47,0x0E,0x1C,0x17,0x1B,0x1E);
-    /* RAMCTRL: explicit big-endian on the wire so our pre-byte-swapped
-     * RGB565 buffers blit raw without color corruption. Defends against
-     * IDF GH#11416 where the default value occasionally lands wrong. */
-    TX(0xB0, 0x00, 0xE0);
+    /* NOTE: RAMCTRL (0xB0) was set here to force MSB-first byte order
+     * but it interacted badly with our existing rgb565_be() pre-swap
+     * (and possibly with the IDF panel driver's own MADCTL pass) —
+     * result was the framebuffer rendering as a solid blue field on
+     * the badge. Default RAMCTRL works correctly with our pre-swapped
+     * pixels, so leave it alone. */
 #undef TX
 }
 
@@ -254,7 +256,13 @@ esp_err_t display_init(void)
 
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
-    apply_st7789_quality_init();
+    /* TEMP: disabled while diagnosing the all-blue framebuffer. The
+     * quality-init pass adds porch/gate/VCOM/power/gamma settings
+     * that, in combination with the IDF panel driver's built-in
+     * init, made the panel render every frame as solid blue on this
+     * badge. Default IDF init alone produces correct colors. */
+    /* apply_st7789_quality_init(); */
+    (void)apply_st7789_quality_init;   /* keep symbol referenced */
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, true));
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));

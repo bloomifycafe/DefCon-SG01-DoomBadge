@@ -558,16 +558,28 @@ void R_RenderBSPNode (int bspnum)
     }
 		
     bsp = &nodes[bspnum];
-    
+
     // Decide which side the view point is on.
     side = R_PointOnSide (viewx, viewy, bsp);
 
     // Recursively divide front space.
-    R_RenderBSPNode (bsp->children[side]); 
+    R_RenderBSPNode (bsp->children[side]);
 
     // Possibly divide back space.
-    if (R_CheckBBox (bsp->bbox[side^1]))	
-	R_RenderBSPNode (bsp->children[side^1]);
+    /* ESP32-C6 PORT: bsp->bbox is now int16_t (mapunits). R_CheckBBox
+     * expects a fixed_t[4]; expand into a small stack array via the
+     * NODE_BBOX accessor before calling. The compiler keeps this in
+     * registers — no stack spill in practice. */
+    {
+        fixed_t cbb[4] = {
+            NODE_BBOX(bsp, side^1, 0),
+            NODE_BBOX(bsp, side^1, 1),
+            NODE_BBOX(bsp, side^1, 2),
+            NODE_BBOX(bsp, side^1, 3),
+        };
+        if (R_CheckBBox(cbb))
+            R_RenderBSPNode (bsp->children[side^1]);
+    }
 }
 
 

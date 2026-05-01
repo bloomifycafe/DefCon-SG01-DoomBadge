@@ -260,21 +260,38 @@ typedef struct
 //
 // BSP node.
 //
+// ESP32-C6 PORT: node_t was vanilla 56 bytes (4 fixed_t partition line +
+// 8 fixed_t bbox + 2 int children). On a fragmented post-IDF heap E1M2's
+// ~415-node Z_Malloc(23 KiB) can fail before any P_LoadNodes work runs.
+// Shrunk to 28 bytes — exactly matching the WAD's `mapnode_t` layout —
+// so P_LoadNodes can mmap straight from flash with no Z_Malloc at all
+// and no per-element copy. Every reader pays for an inline `<<FRACBITS`
+// shift via the NODE_X / NODE_BBOX macros below.
 typedef struct
 {
-    // Partition line.
-    fixed_t	x;
-    fixed_t	y;
-    fixed_t	dx;
-    fixed_t	dy;
+    // Partition line — int16 mapunits, shift <<FRACBITS via NODE_X etc.
+    int16_t	x;
+    int16_t	y;
+    int16_t	dx;
+    int16_t	dy;
 
-    // Bounding box for each child.
-    fixed_t	bbox[2][4];
+    // Bounding box for each child — int16 mapunits, shift via NODE_BBOX.
+    int16_t	bbox[2][4];
 
     // If NF_SUBSECTOR its a subsector.
     unsigned short children[2];
-    
+
 } node_t;
+
+/* Accessors: convert the on-disk-format int16 fields back to fixed_t
+ * for the renderer's math paths. The compiler hoists the shift out of
+ * R_PointOnSide's hot path (per-node, not per-pixel) so the cost is
+ * negligible compared to the FixedMul that follows. */
+#define NODE_X(n)         ((fixed_t)(n)->x  << FRACBITS)
+#define NODE_Y(n)         ((fixed_t)(n)->y  << FRACBITS)
+#define NODE_DX(n)        ((fixed_t)(n)->dx << FRACBITS)
+#define NODE_DY(n)        ((fixed_t)(n)->dy << FRACBITS)
+#define NODE_BBOX(n,s,c)  ((fixed_t)(n)->bbox[s][c] << FRACBITS)
 
 
 

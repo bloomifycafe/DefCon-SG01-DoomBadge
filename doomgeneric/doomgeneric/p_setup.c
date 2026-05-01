@@ -295,37 +295,30 @@ void P_LoadSectors (int lump)
 //
 // P_LoadNodes
 //
+// ESP32-C6 PORT: vanilla Z_Malloc'd numnodes * sizeof(node_t) (56 B
+// each) and ran a per-node copy/expand loop from the WAD's mapnode_t
+// (28 B). On a fragmented zone the contiguous-23 KiB request fails
+// for any moderately sized map (E1M2 onward). node_t was redefined
+// to mirror mapnode_t exactly (see r_defs.h), so we can just point
+// `nodes` at the mmap'd lump in flash — no allocation, no copy.
+// Endian: ESP32-C6 is little-endian, the WAD is little-endian, so
+// SHORT() is a no-op and the in-flash bytes are directly readable.
 void P_LoadNodes (int lump)
 {
-    byte*	data;
-    int		i;
-    int		j;
-    int		k;
-    mapnode_t*	mn;
-    node_t*	no;
-	
-    numnodes = W_LumpLength (lump) / sizeof(mapnode_t);
-    nodes = Z_Malloc (numnodes*sizeof(node_t),PU_LEVEL,0);	
-    data = W_CacheLumpNum (lump,PU_STATIC);
-	
-    mn = (mapnode_t *)data;
-    no = nodes;
-    
-    for (i=0 ; i<numnodes ; i++, no++, mn++)
-    {
-	no->x = SHORT(mn->x)<<FRACBITS;
-	no->y = SHORT(mn->y)<<FRACBITS;
-	no->dx = SHORT(mn->dx)<<FRACBITS;
-	no->dy = SHORT(mn->dy)<<FRACBITS;
-	for (j=0 ; j<2 ; j++)
-	{
-	    no->children[j] = SHORT(mn->children[j]);
-	    for (k=0 ; k<4 ; k++)
-		no->bbox[j][k] = SHORT(mn->bbox[j][k])<<FRACBITS;
-	}
-    }
-	
-    W_ReleaseLumpNum(lump);
+    /* Compile-time sanity check: node_t must match the on-disk WAD
+     * format byte-for-byte. If anyone re-expands node_t to fixed_t,
+     * this trips before we read garbage from flash. */
+    _Static_assert(sizeof(node_t) == sizeof(mapnode_t),
+                   "node_t must mirror mapnode_t for the flash-mmap'd "
+                   "P_LoadNodes path; see r_defs.h");
+
+    numnodes = W_LumpLength(lump) / sizeof(mapnode_t);
+    nodes = (node_t *) W_CacheLumpNum(lump, PU_STATIC);
+    /* Do NOT W_ReleaseLumpNum — we're using the mapped pointer for
+     * the lifetime of the level. Lump tag is PU_STATIC which means
+     * Z_FreeTags(PU_LEVEL) at level end won't disturb it; on the
+     * mmap'd WAD path the pointer is into flash anyway and free is
+     * a no-op. */
 }
 
 

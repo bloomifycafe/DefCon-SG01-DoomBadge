@@ -151,33 +151,42 @@ R_PointOnSide
   fixed_t	y,
   node_t*	node )
 {
+    /* ESP32-C6 PORT: node_t fields are int16 (mapunits) instead of
+     * fixed_t. We keep the same algorithm and FRACBITS-shift via the
+     * NODE_* accessors. Vanilla's `node->dy>>FRACBITS` collapses to
+     * just `node->dy` on us — the int16 is already the int-mapunit
+     * form vanilla was reaching. */
+    fixed_t	nx  = NODE_X(node);
+    fixed_t	ny  = NODE_Y(node);
+    fixed_t	ndx = NODE_DX(node);
+    fixed_t	ndy = NODE_DY(node);
     fixed_t	dx;
     fixed_t	dy;
     fixed_t	left;
     fixed_t	right;
-	
-    if (!node->dx)
+
+    if (!ndx)
     {
-	if (x <= node->x)
-	    return node->dy > 0;
-	
-	return node->dy < 0;
+	if (x <= nx)
+	    return ndy > 0;
+
+	return ndy < 0;
     }
-    if (!node->dy)
+    if (!ndy)
     {
-	if (y <= node->y)
-	    return node->dx < 0;
-	
-	return node->dx > 0;
+	if (y <= ny)
+	    return ndx < 0;
+
+	return ndx > 0;
     }
-	
-    dx = (x - node->x);
-    dy = (y - node->y);
-	
+
+    dx = (x - nx);
+    dy = (y - ny);
+
     // Try to quickly decide by looking at sign bits.
-    if ( (node->dy ^ node->dx ^ dx ^ dy)&0x80000000 )
+    if ( (ndy ^ ndx ^ dx ^ dy)&0x80000000 )
     {
-	if  ( (node->dy ^ dx) & 0x80000000 )
+	if  ( (ndy ^ dx) & 0x80000000 )
 	{
 	    // (left is negative)
 	    return 1;
@@ -185,16 +194,19 @@ R_PointOnSide
 	return 0;
     }
 
-    left = FixedMul ( node->dy>>FRACBITS , dx );
-    right = FixedMul ( dy , node->dx>>FRACBITS );
-	
+    /* node->dy and node->dx are already in mapunits (16-bit), no need
+     * to shift down — vanilla's `node->dy >> FRACBITS` undid the
+     * P_LoadNodes left-shift, which we no longer perform. */
+    left  = FixedMul ( (fixed_t)node->dy , dx );
+    right = FixedMul ( dy , (fixed_t)node->dx );
+
     if (right < left)
     {
 	// front side
 	return 0;
     }
     // back side
-    return 1;			
+    return 1;
 }
 
 
